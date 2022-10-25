@@ -1,162 +1,205 @@
-use std::{
-    cell::RefCell,
-    rc::{Rc, Weak},
-};
+use std::collections::HashMap;
 
-/**
- * What will #inline and #must_use do?
- */
+use actix_web::{body::MessageBody, error, web, App, HttpResponse, HttpServer, Responder};
+
+use serde_json::Value;
 
 #[derive(Debug)]
-struct ListNode<T> {
-    pub items: Vec<T>,
-    pub next: Option<Rc<RefCell<ListNode<T>>>>,
-}
-
-impl<T> ListNode<T> {
-    pub fn new(size: usize) -> Self {
-        ListNode {
-            items: Vec::with_capacity(size),
-            next: None,
-        }
-    }
-
-    fn set_next(&mut self, item: Rc<RefCell<ListNode<T>>>) {
-        self.next = Some(item);
-    }
+enum ColumnType {
+    Null,
+    Bool,
+    Number,
+    String,
 }
 
 #[derive(Debug)]
-struct UnrolledLinkedList<T> {
-    first: Rc<RefCell<ListNode<T>>>,
-    last: Rc<RefCell<ListNode<T>>>,
+struct Column {
+    key: String,
+    column_type: ColumnType,
+    value: serde_json::Value,
 }
 
-impl<T> UnrolledLinkedList<T> {
-    pub fn new(first_item: ListNode<T>) -> Self {
-        let first = Rc::new(RefCell::new(first_item));
-        let last = Rc::clone(&first);
-        UnrolledLinkedList { first, last }
-    }
-
-    pub fn add(&mut self, item: ListNode<T>) {
-        let point = Rc::new(RefCell::new(item));
-        let new_last = point.clone();
-
-        self.last.borrow_mut().set_next(point);
-        self.last = new_last;
-    }
-}
-
-#[derive(Debug)]
-struct TreeNode {
-    pub parent: Option<Weak<TreeNode>>,
-    // Size of children is always >= b/2 and always <= b
-    //     children: RefCell<Vec<Rc<Node>>>,
-    pub children: Vec<Box<TreeNode>>,
-    // The total amount of logs contained in this node and it's children.
-    pub entries: u64,
-    pub min: u64,
-    pub max: u64,
-    // TODO: optional Pointer to Index-Collection
-    // => The collection itself is a range again
-}
-
-impl TreeNode {
-    pub fn new() -> Self {
-        TreeNode {
-            parent: None,
-            children: Vec::new(),
-            entries: 0,
-            min: 0,
-            max: 0,
-        }
-    }
-
-    pub fn from(children: Vec<Box<TreeNode>>) -> Self {
-        let entries = children.iter().map(|c| c.entries).sum();
-        let min = children[0].min;
-        let max = children[children.len() - 1].max;
-
-        TreeNode {
-            parent: None,
-            children,
-            entries,
-            min,
-            max,
-        }
-    }
-
-    // TODO: Not generic yet, just if lowest leave
-    pub fn add(&mut self, entry: LogEntry) {
-        // if (self.children.capacity() > self.children.len()) {
-        //      self.children.push(entry);
-        // }
-
-        // TODO: Add to index-collection, if there is space
-        self.entries = self.entries + 1;
-        // TODO: Increase all parents entries value
-        // => seems slow, but should be ok, no comparisons necessary
-        self.max = entry.time;
-    }
-}
-
-struct LogEntry {
+struct Log {
+    pub gid: String,
     pub time: u64,
+    // TODO: Rather HashMap?
+    pub columns: Vec<Column>,
 }
 
-struct Tree {
-    pub head: Rc<RefCell<TreeNode>>,
-    // TODO: Add link to right-most leave
-    pub current_leave: Rc<RefCell<TreeNode>>,
+struct IColumn<'a> {
+    pub key: String,
+    pub value: &'a serde_json::Value,
 }
 
-impl Tree {
-    pub fn new() -> Self {
-        let head = Rc::new(RefCell::new(TreeNode::new()));
-        let current_leave = Rc::clone(&head);
+fn parse_log_into_columns(raw_json: String) -> Result<Vec<Column>, serde_json::Error> {
+    let body: HashMap<String, serde_json::Value> = serde_json::from_str(&raw_json)?;
+    let mut columns: Vec<Column> = Vec::with_capacity(body.len());
 
-        Tree {
-            head,
-            current_leave,
+    let mut values_to_check: Vec<IColumn> =
+        Vec::from_iter(body.iter().map(|(key, value)| IColumn {
+            key: key.clone(),
+            value,
+        }));
+
+    let mut i = 0;
+    loop {
+        if i >= values_to_check.len() {
+            break;
+        }
+
+        let current = &values_to_check[i];
+        let current_key = current.key.clone();
+
+        if current.value.is_object() {
+            let children = current
+                .value
+                .as_object()
+                .unwrap()
+                .iter()
+                .map(|(key, value)| IColumn {
+                    key: format!("{}.{}", current_key, key),
+                    value,
+                });
+
+            values_to_check.extend(children);
+        // TODO: Should we even index array values?
+        } else if current.value.is_array() {
+            // let current_children = current.value.as_array().unwrap().iter();
+
+            // let object_children = current_children
+            //     .filter(|predicate| predicate.is_object())
+            //     .flat_map(|obj| {
+            //         obj.as_object().unwrap().iter().map(|(key, value)| IColumn {
+            //             key: format!("{}.{}", current_key, key),
+            //             value,
+            //         })
+            //     });
+
+            // values_to_check.extend(object_children);
+            // let children = current
+            //     .value
+            //     .as_array()
+            //     .unwrap()
+            //     .iter()
+            //     .map(|(key, value)| IColumn { key, value });
+        } else {
+            columns.push(Column {
+                key: current_key,
+                value: current.value.clone(),
+                column_type: match current.value {
+                    Value::Null => ColumnType::Null,
+                    Value::Bool(_) => ColumnType::Bool,
+                    Value::Number(_) => ColumnType::Number,
+                    Value::String(_) => ColumnType::String,
+                    // _ => return Result::Err(format!("Unexpected type {:?}", current.value)),
+                    // TODO: What on array?
+                    _ => panic!("Unexpected type {:?}", current.value),
+                },
+            })
+        }
+
+        i += 1;
+    }
+
+    return Result::Ok(columns);
+}
+
+struct AddLogErr {
+    pub message: String,
+}
+
+// TODO: Return ref of log?
+fn add_log(req_body: String) -> Result<Log, AddLogErr> {
+    let parsed_columns = parse_log_into_columns(req_body);
+
+    // if parsed_columns.is_err() {
+    //     return Err(AddLogErr {
+    //         message: "Parsing error".to_string(),
+    //     });
+    // }
+
+    let columns = parsed_columns.unwrap();
+    // let cols = parsed_columns..ok_or_else(|_| AddLogErr {
+    //     message: "".to_string(),
+    // })?;
+
+    let time: u64 = columns
+        .iter()
+        .find(|column| column.key == "time")
+        .ok_or_else(|| AddLogErr {
+            message: "'time' column is missing".to_string(),
+        })?
+        .value
+        .as_u64()
+        .ok_or_else(|| AddLogErr {
+            message: "'time' column has wrong format".to_string(),
+        })?;
+
+    Ok(Log {
+        gid: xid::new().to_string(),
+        time,
+        columns,
+    })
+}
+
+async fn add_log_wrap(req_body: String) -> impl Responder {
+    let res = add_log(req_body);
+
+    match res {
+        Err(error) => {
+            return HttpResponse::BadRequest()
+                .message_body(MessageBody::boxed(error.message))
+                .unwrap()
+        }
+        // TODO: Push the full log into the queue
+        Ok(log) => {
+            println!("{} {}", log.time, log.gid);
+            for column in log.columns {
+                println!(
+                    "{}: {} ({:?})",
+                    column.key, column.value, column.column_type
+                );
+            }
+            return HttpResponse::Ok().finish();
         }
     }
-
-    pub fn add(&self, entry: LogEntry) {
-        self.current_leave.borrow_mut().add(entry)
-    }
 }
 
-fn main() {
-    let mut first_node = ListNode::new(16);
-    first_node.items.push(111);
-    let mut second_node: ListNode<i32> = ListNode::new(16);
-    second_node.items.push(222);
+#[actix_web::main]
+async fn main() -> std::io::Result<()> {
+    // let entries = [
+    //     LogEntry {
+    //         time: 1665622800655,
+    //     },
+    //     LogEntry {
+    //         time: 1665622800656,
+    //     },
+    //     LogEntry {
+    //         time: 1665622800657,
+    //     },
+    // ];
 
-    let mut l_list: UnrolledLinkedList<i32> = UnrolledLinkedList::new(first_node);
+    // let tree = MainTree::new();
+    // tree.insert(LogEntry {
+    //     time: 1665622800655,
+    // });
 
-    l_list.add(second_node);
+    HttpServer::new(|| {
+        let json_config = web::JsonConfig::default()
+            .limit(4096)
+            .error_handler(|err, _req| {
+                error::InternalError::from_response(err, HttpResponse::BadRequest().finish()).into()
+            });
 
-    println!("{:?}", l_list);
-
-    println!("{:?}", l_list.first);
-
-    let entries = [
-        LogEntry {
-            time: 1665622800655,
-        },
-        LogEntry {
-            time: 1665622800656,
-        },
-        LogEntry {
-            time: 1665622800657,
-        },
-    ];
-
-    let tree = Tree::new();
-    tree.add(LogEntry {
-        time: 1665622800655,
-    });
+        App::new().service(
+            web::resource("/log")
+                .app_data(json_config)
+                .route(web::post().to(add_log_wrap)),
+        )
+    })
+    .bind(("127.0.0.1", 8080))?
+    .run()
+    .await
 }
 
 // #[cfg(test)]
