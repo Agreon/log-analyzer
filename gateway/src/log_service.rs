@@ -2,6 +2,7 @@ use actix_web::{
     error::{self},
     post,
     web::{self},
+    HttpResponse,
 };
 use bytes::{Buf, Bytes};
 use common::log::Log;
@@ -9,7 +10,6 @@ use rdkafka::{producer::FutureRecord, util::Timeout};
 
 use crate::{app_config::AppConfig, AppData};
 
-// TODO: We need some global error handler for internalServerError
 fn check_auth_header(
     req: &actix_web::HttpRequest,
     app_config: &AppConfig,
@@ -30,27 +30,26 @@ pub async fn add_log(
     req: actix_web::HttpRequest,
     req_body: Bytes,
     data: web::Data<AppData>,
-) -> actix_web::Result<String> {
+) -> actix_web::Result<HttpResponse> {
     check_auth_header(&req, &data.app_config)?;
 
     let log = Log::from_bytes(&req_body).map_err(|err| error::ErrorBadRequest(err.message))?;
 
-    println!("{:?}", log);
+    match data.kafka_client.lock() {
+        // TODO: Log real errors in middleware + sentry
+        Err(_err) => Err(error::ErrorInternalServerError("Internal Server Error")),
+        Ok(client) => {
+            let record: FutureRecord<String, [u8]> =
+                FutureRecord::to(&data.app_config.kafka_log_topic)
+                    .payload(log.original_data.chunk());
 
-    let res = data
-        .kafka_client
-        .lock()
-        .unwrap()
-        .send(
-            // TODO: Topic
-            FutureRecord::to("topic")
-                // TODO: key
-                .key("test")
-                .payload(log.original_data.chunk()),
-            Timeout::Never,
-        )
-        .await;
-
-    println!("{:?}", res);
-    Ok(String::from(""))
+            match client.send(record, Timeout::Never).await {
+                Err(err) => {
+                    println!("{:?}", err);
+                    Err(error::ErrorInternalServerError("Internal Server Error"))
+                }
+                Ok(_) => Ok(HttpResponse::Ok().finish()),
+            }
+        }
+    }
 }
