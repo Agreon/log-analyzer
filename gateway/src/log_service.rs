@@ -2,7 +2,7 @@ use actix_web::{
     error::{self},
     post,
     web::{self},
-    HttpResponse,
+    HttpResponse, Responder,
 };
 use bytes::{Buf, Bytes};
 use common::log::Log;
@@ -30,10 +30,10 @@ pub async fn add_log(
     req: actix_web::HttpRequest,
     req_body: Bytes,
     data: web::Data<AppData>,
-) -> actix_web::Result<HttpResponse> {
+) -> impl Responder {
     check_auth_header(&req, &data.app_config)?;
 
-    let log = Log::from_bytes(&req_body).map_err(|err| error::ErrorBadRequest(err.message))?;
+    let log = Log::try_from(req_body.chunk()).map_err(error::ErrorBadRequest)?;
 
     match data.kafka_client.lock() {
         // TODO: Log real errors in middleware + sentry
@@ -43,13 +43,14 @@ pub async fn add_log(
                 FutureRecord::to(&data.app_config.kafka_log_topic)
                     .payload(log.original_data.chunk());
 
-            match client.send(record, Timeout::Never).await {
-                Err(err) => {
+            client
+                .send(record, Timeout::Never)
+                .await
+                .map(|_| HttpResponse::Ok())
+                .map_err(|err| {
                     println!("{:?}", err);
-                    Err(error::ErrorInternalServerError("Internal Server Error"))
-                }
-                Ok(_) => Ok(HttpResponse::Ok().finish()),
-            }
+                    error::ErrorInternalServerError("Internal Server Error")
+                })
         }
     }
 }

@@ -5,6 +5,7 @@ use bollard::{
     errors::Error,
     Docker,
 };
+use bytes::Buf;
 use common::log::Log;
 use futures_core::Stream;
 use futures_util::pin_mut;
@@ -104,7 +105,7 @@ impl ContainerLogExtractor {
         while let Some(res) = stream.next().await {
             match res {
                 Err(err) => panic!("{}", err),
-                Ok(log_output) => match Log::from_bytes(&log_output.into_bytes()) {
+                Ok(log_output) => match Log::try_from(log_output.into_bytes().chunk()) {
                     Ok(log) => tx.send(log).await.unwrap(),
                     Err(error) => info!("Warn: No valid log found ({})", error),
                 },

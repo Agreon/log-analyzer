@@ -32,8 +32,10 @@ pub struct ParseLogErr {
     pub code: ParseLogErrorCode,
 }
 
-impl Log {
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, ParseLogErr> {
+impl TryFrom<&[u8]> for Log {
+    type Error = ParseLogErr;
+
+    fn try_from(bytes: &[u8]) -> Result<Self, ParseLogErr> {
         let value: serde_json::Result<serde_json::Value> = serde_json::from_slice(bytes);
 
         match value {

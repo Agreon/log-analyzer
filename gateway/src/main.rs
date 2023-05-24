@@ -23,6 +23,7 @@ async fn main() -> std::io::Result<()> {
     let producer: FutureProducer = ClientConfig::new()
         .set("bootstrap.servers", &app_config.kafka_host)
         .set("message.timeout.ms", "5000")
+        .set("linger.ms", "25")
         .create()
         .unwrap();
 
