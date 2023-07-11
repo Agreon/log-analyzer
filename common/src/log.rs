@@ -1,6 +1,5 @@
-use std::fmt;
-
 use bytes::Bytes;
+use thiserror::Error;
 
 pub type Timestamp = u64;
 
@@ -12,24 +11,16 @@ pub struct Log {
     pub size_in_bytes: usize,
 }
 
-#[derive(Debug)]
-pub enum ParseLogErrorCode {
-    ParseError,
+#[derive(Error, Debug)]
+pub enum ParseLogErr {
+    #[error("Could not parse json. Log: '{log:?}'. Error: '{error:?}'")]
+    ParseError { log: String, error: String },
+    #[error("Payload is not an object")]
     NotAnObject,
+    #[error("'time' column is missing")]
     TimeColumnMissing,
+    #[error("'time' column has wrong format")]
     TimeColumnHasWrongFormat,
-}
-
-impl fmt::Display for ParseLogErr {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "[{:?}] {}", self.code, self.message)
-    }
-}
-
-#[derive(Debug)]
-pub struct ParseLogErr {
-    pub message: String,
-    pub code: ParseLogErrorCode,
 }
 
 impl TryFrom<&[u8]> for Log {
@@ -39,31 +30,18 @@ impl TryFrom<&[u8]> for Log {
         let value: serde_json::Result<serde_json::Value> = serde_json::from_slice(bytes);
 
         match value {
-            Err(error) => Err(ParseLogErr {
-                message: format!(
-                    "Could not parse json. Log: '{}'. Error: '{}'",
-                    String::from_utf8_lossy(bytes),
-                    error,
-                ),
-                code: ParseLogErrorCode::ParseError,
+            Err(error) => Err(ParseLogErr::ParseError {
+                log: String::from_utf8_lossy(bytes).into(),
+                error: format!("{}", error),
             }),
             Ok(value) => {
                 let time = value
                     .as_object()
-                    .ok_or(ParseLogErr {
-                        message: String::from("Payload is not an object"),
-                        code: ParseLogErrorCode::NotAnObject,
-                    })?
+                    .ok_or(ParseLogErr::NotAnObject)?
                     .get("time")
-                    .ok_or(ParseLogErr {
-                        message: String::from("'time' column is missing"),
-                        code: ParseLogErrorCode::TimeColumnMissing,
-                    })?
+                    .ok_or(ParseLogErr::TimeColumnMissing)?
                     .as_u64()
-                    .ok_or(ParseLogErr {
-                        message: String::from("'time' column has wrong format"),
-                        code: ParseLogErrorCode::TimeColumnHasWrongFormat,
-                    })?;
+                    .ok_or(ParseLogErr::TimeColumnHasWrongFormat)?;
 
                 Ok(Log {
                     time,

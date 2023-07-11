@@ -267,6 +267,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "anyhow"
+version = "1.0.71"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9c7d0618f0e0b7e8ff11427422b64564d5fb0be1940354bfe2e0529b18a9d9b8"
+
+[[package]]
 name = "async-trait"
 version = "0.1.68"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -434,6 +440,7 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "serde_json",
+ "thiserror",
 ]
 
 [[package]]
@@ -1290,6 +1297,7 @@ checksum = "478c572c3d73181ff3c2539045f6eb99e5491218eae919370993b890cdbdd98e"
 name = "persistor"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "common",
  "config",
  "dotenv",
